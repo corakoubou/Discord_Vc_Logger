@@ -130,12 +130,10 @@ def get_font(size, bold=False):
 def timeline_image(s, end, avatars):
     """Draw Japanese names, circular avatars, and color-coded timeline bars."""
     start_dt, end_dt = dt(s['start']), dt(end)
-    duration = max(1., (end_dt - start_dt).total_seconds())
+    duration = (end_dt - start_dt).total_seconds() or 1
     people = list(s['participants'].items())
-    W, LEFT, RIGHT, ROW = 1500, 360, 65, 76
-    H = 230 + len(people) * ROW + 90
-    img = Image.new('RGB', (W, H), '#1e1f22')
-    draw = ImageDraw.Draw(img)
+    W, LEFT, RIGHT, ROW = 1500, 360, 65, 112
+    label_spacing = 24
     strong, normal, small = get_font(27, True), get_font(23), get_font(19)
     green, orange, white, gray = '#63f28a', '#ffae42', '#eef0f4', '#a9afb9'
     x0, x1 = LEFT, W - RIGHT
@@ -144,14 +142,39 @@ def timeline_image(s, end, avatars):
         fraction = (at - start_dt).total_seconds() / duration
         return round(x0 + max(0, min(1, fraction)) * (x1 - x0))
 
-    def label(text, at_x, y, fill):
-        bbox = draw.textbbox((0, 0), text, font=small)
-        w = bbox[2] - bbox[0]
-        draw.rounded_rectangle((at_x-w/2-6, y-34, at_x+w/2+6, y-8), radius=5, fill='#1e1f22')
-        draw.text((at_x-w/2, y-34-bbox[1]), text, font=small, fill=fill)
+    rows = []
+    next_y = 205
+    for uid, name in people:
+        events = sorted(s.get('timeline', {}).get(uid, []), key=lambda event: dt(event['at']))
+        labels = []
+        lane_right = []
+        for event in events:
+            at, kind = event['at'], event['kind']
+            xx = x(dt(at))
+            text = f'{kind}  {hm(at)}'
+            width = small.getlength(text)
+            # Use the first lane with room and shift lower labels toward the right.
+            for lane in range(len(lane_right) + 1):
+                center = min(W - 16 - width / 2, xx + lane * 20)
+                left = center - width / 2
+                if lane == len(lane_right):
+                    lane_right.append(left + width)
+                    break
+                if left >= lane_right[lane] + 8:
+                    lane_right[lane] = left + width
+                    break
+            color = orange if kind in ('S', 'E') else green if kind in ('F', 'I', '?') else white
+            labels.append((xx, kind, text, center, width, lane, color))
+        rows.append((uid, name, next_y, labels))
+        next_y += max(ROW, 64 + len(lane_right) * label_spacing)
+
+    img = Image.new('RGB', (W, next_y + 115), '#1e1f22')
+    draw = ImageDraw.Draw(img)
 
     draw.text((32, 22), f"{s['channel_name']}  |  VC活動記録", font=strong, fill=white)
-    draw.text((32, 67), f"{stamp(s['start'])}  ～  {stamp(end)}    参加者 {len(people)}人", font=small, fill=gray)
+    start_label = start_dt.astimezone(JST).strftime('%Y/%m/%d %H:%M')
+    end_label = end_dt.astimezone(JST).strftime('%Y/%m/%d %H:%M')
+    draw.text((32, 67), f"{start_label}  ～  {end_label}    参加者 {len(people)}人", font=small, fill=gray)
     draw.text((32, 132), '参加者', font=normal, fill=gray)
     local_start = start_dt.astimezone(JST)
     interval = timedelta(minutes=30)
@@ -167,11 +190,10 @@ def timeline_image(s, end, avatars):
         if left >= label_right:
             draw.text((left, 131), text, font=small, fill=gray)
             label_right = left + width + 8
-        draw.line((tx, 164, tx, 190+len(people)*ROW), fill='#363a40', width=2)
+        draw.line((tx, 164, tx, next_y - 15), fill='#363a40', width=2)
         tick += interval
 
-    for i, (uid, name) in enumerate(people):
-        y = 205 + i*ROW
+    for uid, name, y, labels in rows:
         avatar = avatars.get(uid)
         if avatar:
             avatar = ImageOps.fit(avatar.convert('RGB'), (46, 46))
@@ -190,13 +212,10 @@ def timeline_image(s, end, avatars):
             shown = shown[:-1] + '…'
         draw.text((90, y-16), shown, font=normal, fill=white)
 
-        events = sorted(s.get('timeline', {}).get(uid, []), key=lambda e:e['at'])
         active, streaming, previous = False, False, None
-        for e in events:
-            xx = x(dt(e['at']))
+        for xx, kind, *_ in labels:
             if active and previous is not None and xx > previous:
                 draw.line((previous, y, xx, y), fill=orange if streaming else green, width=11)
-            kind = e['kind']
             if kind in ('F','I','?'):
                 active = True
             elif kind in ('O','L'):
@@ -205,14 +224,21 @@ def timeline_image(s, end, avatars):
                 streaming = True
             elif kind == 'E':
                 streaming = False
-            # Event glyphs sit above the bar, with a dot on the exact timestamp.
-            draw.ellipse((xx-5,y-5,xx+5,y+5), fill=orange if kind in ('S','E') else green if kind in ('F','I','?') else white)
-            label(kind, xx, y, orange if kind in ('S','E') else green if kind in ('F','I','?') else white)
             previous = xx
         if active and previous is not None:
             draw.line((previous,y,x1,y),fill=orange if streaming else green,width=11)
 
-    bottom = 215 + len(people)*ROW
+        for xx, _, _, center, _, lane, color in labels:
+            top = y + 18 + lane * label_spacing
+            draw.line((xx, y + 4, center, y + 13, center, top - 3), fill=color)
+            draw.ellipse((xx - 4, y - 4, xx + 4, y + 4), fill=color)
+        for _, _, text, center, width, lane, color in labels:
+            top = y + 18 + lane * label_spacing
+            left, right = center - width / 2, center + width / 2
+            draw.rounded_rectangle((left - 3, top - 2, right + 3, top + 19), radius=3, fill='#1e1f22')
+            draw.text((center, top), text, font=small, fill=color, anchor='mt')
+
+    bottom = next_y + 10
     draw.text((32,bottom), 'F 最初の入室  I 入室  O 退出  L 最後の退出  S 配信開始  E 配信終了  ? 状態不明', font=small, fill=gray)
     draw.line((32,bottom+49,70,bottom+49),fill=green,width=10)
     draw.text((82,bottom+35),'VC入室中',font=small,fill=white)
