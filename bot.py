@@ -141,7 +141,7 @@ def timeline_image(s, end, avatars):
     x0, x1 = LEFT, W - RIGHT
 
     def x(at):
-        fraction = (dt(at) - start_dt).total_seconds() / duration
+        fraction = (at - start_dt).total_seconds() / duration
         return round(x0 + max(0, min(1, fraction)) * (x1 - x0))
 
     def label(text, at_x, y, fill):
@@ -153,13 +153,22 @@ def timeline_image(s, end, avatars):
     draw.text((32, 22), f"{s['channel_name']}  |  VC活動記録", font=strong, fill=white)
     draw.text((32, 67), f"{stamp(s['start'])}  ～  {stamp(end)}    参加者 {len(people)}人", font=small, fill=gray)
     draw.text((32, 132), '参加者', font=normal, fill=gray)
-    for fraction in (0, .25, .5, .75, 1):
-        tx = round(x0 + (x1-x0)*fraction)
-        t = start_dt + (end_dt-start_dt)*fraction
-        text = t.astimezone(JST).strftime('%H:%M')
-        bbox = draw.textbbox((0,0), text, font=small)
-        draw.text((tx-(bbox[2]-bbox[0])/2, 131), text, font=small, fill=gray)
+    local_start = start_dt.astimezone(JST)
+    interval = timedelta(minutes=30)
+    tick = local_start.replace(minute=local_start.minute // 30 * 30, second=0, microsecond=0)
+    if tick < local_start:
+        tick += interval
+    label_right = 0
+    while tick <= end_dt:
+        tx = x(tick)
+        text = tick.strftime('%H:%M')
+        width = draw.textlength(text, font=small)
+        left = tx - width / 2
+        if left >= label_right:
+            draw.text((left, 131), text, font=small, fill=gray)
+            label_right = left + width + 8
         draw.line((tx, 164, tx, 190+len(people)*ROW), fill='#363a40', width=2)
+        tick += interval
 
     for i, (uid, name) in enumerate(people):
         y = 205 + i*ROW
@@ -184,7 +193,7 @@ def timeline_image(s, end, avatars):
         events = sorted(s.get('timeline', {}).get(uid, []), key=lambda e:e['at'])
         active, streaming, previous = False, False, None
         for e in events:
-            xx = x(e['at'])
+            xx = x(dt(e['at']))
             if active and previous is not None and xx > previous:
                 draw.line((previous, y, xx, y), fill=orange if streaming else green, width=11)
             kind = e['kind']
